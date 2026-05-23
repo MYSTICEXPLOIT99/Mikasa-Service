@@ -1,7 +1,7 @@
 const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
 const fetch = require('node-fetch');
 
-const TOKEN = "MTUwNzc0NjgyOTEzMzk0MjgyNA.GPLSCj.m_xi7w8xMyxP99W3WhZ_EsXy4PCiB8yYnFAibA";
+const TOKEN = "MTUwNzc0NjgyOTEzMzk0MjgyNA.GRj3-M.r1jEpTmrshiyhBipcxwwnz3t4xjLOn-jYS0gFQ";
 const CLIENT_ID = "1507746829133942824";
 const FIREBASE_URL = "https://mystic-8a8c7-default-rtdb.asia-southeast1.firebasedatabase.app/key";
 
