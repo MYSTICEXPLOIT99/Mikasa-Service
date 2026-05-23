@@ -1,0 +1,429 @@
+const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
+const fetch = require('node-fetch');
+
+const TOKEN = "MTUwNzc0NjgyOTEzMzk0MjgyNA.GPLSCj.m_xi7w8xMyxP99W3WhZ_EsXy4PCiB8yYnFAibA";
+const CLIENT_ID = "1507746829133942824";
+const FIREBASE_URL = "https://mystic-8a8c7-default-rtdb.asia-southeast1.firebasedatabase.app/key";
+
+const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
+
+let adminRoleId = null;
+let projectName = "Mystic-Exploit";
+let bgUrl = null;
+let setupUser = "System";
+let scripts = {};
+let hwidResetCooldownHours = null;
+
+// ========== DATABASE ==========
+async function getDb(path = "") {
+    const res = await fetch(`${FIREBASE_URL}${path}.json`);
+    return res.json();
+}
+
+async function patchDb(path, data) {
+    const res = await fetch(`${FIREBASE_URL}${path}.json`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data)
+    });
+    return res.status;
+}
+
+async function deleteDb(path) {
+    const res = await fetch(`${FIREBASE_URL}${path}.json`, { method: "DELETE" });
+    return res.status;
+}
+
+// ========== UTILS ==========
+function generateRandomKey() {
+    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    let result = "";
+    for (let i = 0; i < 32; i++) {
+        result += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return result;
+}
+
+function calcTimeLeft(startTime, duration) {
+    if (duration === -1) return { permanent: true };
+    if (!startTime || !duration || startTime === 0) return null;
+    const expireAt = startTime + duration;
+    const nowSec = Math.floor(Date.now() / 1000);
+    const remaining = expireAt - nowSec;
+    if (remaining <= 0) return null;
+    const days = Math.floor(remaining / 86400);
+    const hours = Math.floor((remaining % 86400) / 3600);
+    const minutes = Math.floor((remaining % 3600) / 60);
+    return { days, hours, minutes, remaining, permanent: false };
+}
+
+function isAdmin(member) {
+    return member.permissions.has("Administrator") || (adminRoleId && member.roles.cache.has(adminRoleId));
+}
+
+function getMainControlRow() {
+    return new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("get_script").setLabel("🎮 Get Script").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("redeem_key").setLabel("🔑 Redeem Key").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId("reset_hwid").setLabel("🔄 Reset HWID").setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId("key_state").setLabel("📊 State").setStyle(ButtonStyle.Secondary)
+    );
+}
+
+// ========== COMMANDS ==========
+const commands = [
+    new SlashCommandBuilder()
+        .setName("admin_role")
+        .setDescription("เลือกยศสำหรับแอดมิน")
+        .addRoleOption(o => o.setName("role").setDescription("ยศแอดมิน").setRequired(true)),
+
+    new SlashCommandBuilder()
+        .setName("generate_key")
+        .setDescription("สร้างคีย์ใหม่")
+        .addIntegerOption(o => o.setName("days").setDescription("จำนวนวัน (0 = ถาวร)").setRequired(true)),
+
+    new SlashCommandBuilder()
+        .setName("deletekey")
+        .setDescription("ลบคีย์ออกจากระบบ")
+        .addStringOption(o => o.setName("key_name").setDescription("ชื่อคีย์").setRequired(true)),
+
+    new SlashCommandBuilder()
+        .setName("updateurl")
+        .setDescription("เพิ่มสคริปต์ลง Dropdown")
+        .addStringOption(o => o.setName("name").setDescription("ชื่อสคริปต์").setRequired(true))
+        .addStringOption(o => o.setName("url").setDescription("URL สคริปต์").setRequired(true)),
+
+    new SlashCommandBuilder()
+        .setName("dashboard")
+        .setDescription("ดูภาพรวมโปรเจกต์"),
+
+    new SlashCommandBuilder()
+        .setName("setup")
+        .setDescription("ตั้งค่าแผงควบคุม")
+        .addStringOption(o => o.setName("project_name").setDescription("ชื่อโปรเจกต์").setRequired(true))
+        .addAttachmentOption(o => o.setName("background").setDescription("อัพโหลดรูปพื้นหลัง").setRequired(true)),
+
+    new SlashCommandBuilder()
+        .setName("sethwidresettime")
+        .setDescription("ตั้งเวลา Cooldown การรีเซ็ต HWID")
+        .addIntegerOption(o => o.setName("hours").setDescription("จำนวนชั่วโมง cooldown").setRequired(true)),
+
+].map(c => c.toJSON());
+
+const rest = new REST({ version: "10" }).setToken(TOKEN);
+
+// ========== READY ==========
+client.once("ready", async () => {
+    await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
+    console.log(`✅ Logged in as ${client.user.tag}`);
+});
+
+// ========== INTERACTIONS ==========
+client.on("interactionCreate", async (interaction) => {
+
+    // ---------- SLASH COMMANDS ----------
+    if (interaction.isChatInputCommand()) {
+        const { commandName } = interaction;
+
+        if (commandName === "admin_role") {
+            if (!interaction.member.permissions.has("Administrator"))
+                return interaction.reply({ content: "❌ คุณไม่ได้รับอนุญาต", ephemeral: true });
+            const role = interaction.options.getRole("role");
+            adminRoleId = role.id;
+            return interaction.reply({ content: `✅ ตั้งค่ายศแอดมินเป็น ${role} เรียบร้อย`, ephemeral: true });
+        }
+
+        if (commandName === "sethwidresettime") {
+            if (!isAdmin(interaction.member))
+                return interaction.reply({ content: "❌ คุณไม่ได้รับอนุญาต", ephemeral: true });
+            const hours = interaction.options.getInteger("hours");
+            if (hours < 0)
+                return interaction.reply({ content: "❌ จำนวนชั่วโมงต้องมากกว่าหรือเท่ากับ 0", ephemeral: true });
+            hwidResetCooldownHours = hours;
+            return interaction.reply({ content: `✅ ตั้งค่า HWID Reset Cooldown เป็น **${hours} ชั่วโมง** เรียบร้อยแล้ว`, ephemeral: true });
+        }
+
+        if (commandName === "generate_key") {
+            if (!isAdmin(interaction.member))
+                return interaction.reply({ content: "❌ คุณไม่ได้รับอนุญาต", ephemeral: true });
+
+            const days = interaction.options.getInteger("days");
+            const keyName = generateRandomKey();
+            const duration = days === 0 ? -1 : days * 86400;
+            const durationText = days === 0 ? "♾️ ถาวร" : `${days} วัน`;
+
+            await patchDb(`/${keyName}`, {
+                active: false,
+                duration: duration,
+                executionCount: 0,
+                hwid: "",
+                startTime: 0,
+                usedBy: "",
+                lastHwidReset: 0
+            });
+
+            const embed = new EmbedBuilder()
+                .setTitle("🔑 Key Generated")
+                .setColor(0x2ecc71)
+                .addFields(
+                    { name: "Key", value: `\`${keyName}\``, inline: false },
+                    { name: "⏰ Duration", value: durationText, inline: true },
+                    { name: "📌 Status", value: "Inactive", inline: true }
+                )
+                .setFooter({ text: `Generated by ${interaction.member.displayName}` })
+                .setTimestamp();
+
+            return interaction.reply({ embeds: [embed], ephemeral: true });
+        }
+
+        if (commandName === "deletekey") {
+            if (!isAdmin(interaction.member))
+                return interaction.reply({ content: "❌ คุณไม่ได้รับอนุญาต", ephemeral: true });
+            const keyName = interaction.options.getString("key_name");
+            const exists = await getDb(`/${keyName}`);
+            if (!exists)
+                return interaction.reply({ content: `❌ ไม่พบคีย์ \`${keyName}\` ในระบบ`, ephemeral: true });
+            await deleteDb(`/${keyName}`);
+            return interaction.reply({ content: `🗑️ ลบคีย์ \`${keyName}\` ออกจากฐานข้อมูลแล้ว`, ephemeral: true });
+        }
+
+        if (commandName === "updateurl") {
+            if (!isAdmin(interaction.member))
+                return interaction.reply({ content: "❌ คุณไม่ได้รับอนุญาต", ephemeral: true });
+            const name = interaction.options.getString("name");
+            const url = interaction.options.getString("url");
+            scripts[name] = url;
+            return interaction.reply({ content: `✅ อัพเดตสคริปต์ \`${name}\` เข้าสู่ระบบแล้ว`, ephemeral: true });
+        }
+
+        if (commandName === "dashboard") {
+            if (!isAdmin(interaction.member))
+                return interaction.reply({ content: "❌ คุณไม่ได้รับอนุญาต", ephemeral: true });
+            const data = await getDb() || {};
+            const totalKeys = Object.keys(data).length;
+            const activeKeys = Object.values(data).filter(v => v.active).length;
+            const totalExecs = Object.values(data).reduce((a, v) => a + (v.executionCount || 0), 0);
+
+            const embed = new EmbedBuilder()
+                .setTitle(`📊 Dashboard: ${projectName}`)
+                .setColor(0x3498db)
+                .addFields(
+                    { name: "📁 Project Name", value: projectName, inline: true },
+                    { name: "🔑 Total Keys", value: String(totalKeys), inline: true },
+                    { name: "✅ Active Keys", value: String(activeKeys), inline: true },
+                    { name: "▶️ Total Executions", value: String(totalExecs), inline: true },
+                    { name: "🔄 HWID Reset Cooldown", value: hwidResetCooldownHours !== null ? `${hwidResetCooldownHours} ชั่วโมง` : "⚠️ ยังไม่ได้ตั้งค่า", inline: true },
+                    { name: "🎮 Scripts", value: Object.keys(scripts).length > 0 ? Object.keys(scripts).join(", ") : "ยังไม่มีสคริปต์", inline: false }
+                )
+                .setTimestamp();
+
+            return interaction.reply({ embeds: [embed], ephemeral: true });
+        }
+
+        if (commandName === "setup") {
+            if (!interaction.member.permissions.has("Administrator"))
+                return interaction.reply({ content: "❌ คุณไม่ได้รับอนุญาต", ephemeral: true });
+
+            projectName = interaction.options.getString("project_name");
+            const attachment = interaction.options.getAttachment("background");
+
+            if (!attachment.contentType || !attachment.contentType.startsWith("image/"))
+                return interaction.reply({ content: "❌ กรุณาอัพโหลดไฟล์รูปภาพเท่านั้น (jpg, png, gif, webp)", ephemeral: true });
+
+            bgUrl = attachment.url;
+            setupUser = interaction.member.displayName;
+
+            const embed = new EmbedBuilder()
+                .setTitle(`${projectName} Control Panel`)
+                .setDescription("ยินดีต้อนรับ! กรุณาเลือกรายการด้านล่าง")
+                .setImage(bgUrl)
+                .setColor(0x5865F2)
+                .setFooter({ text: `Sent by ${setupUser}` });
+
+            return interaction.reply({ embeds: [embed], components: [getMainControlRow()] });
+        }
+    }
+
+    // ---------- BUTTONS ----------
+    if (interaction.isButton()) {
+
+        if (interaction.customId === "get_script") {
+            const allKeys = await getDb() || {};
+            const found = Object.values(allKeys).find(v => v.usedBy === interaction.user.id);
+            if (!found)
+                return interaction.reply({ content: "❌ ไม่พบการ Redeem ของคุณ! กรุณากด Redeem ก่อน", ephemeral: true });
+            if (Object.keys(scripts).length === 0)
+                return interaction.reply({ content: "❌ ยังไม่มีสคริปต์ในระบบ", ephemeral: true });
+
+            const keyId = Object.keys(allKeys).find(k => allKeys[k].usedBy === interaction.user.id);
+            const keyData = allKeys[keyId];
+            const timeLeft = calcTimeLeft(keyData.startTime, keyData.duration);
+            if (!timeLeft && keyData.duration !== -1)
+                return interaction.reply({ content: "❌ คีย์ของคุณหมดอายุแล้ว!", ephemeral: true });
+
+            const select = new StringSelectMenuBuilder()
+                .setCustomId("script_select")
+                .setPlaceholder("เลือกสคริปต์ที่ต้องการ...")
+                .addOptions(Object.entries(scripts).map(([name, url]) => ({ label: name, value: url })));
+
+            return interaction.reply({
+                content: "✅ ตรวจสอบผ่าน! กรุณาเลือกสคริปต์:",
+                components: [new ActionRowBuilder().addComponents(select)],
+                ephemeral: true
+            });
+        }
+
+        if (interaction.customId === "redeem_key") {
+            const modal = new ModalBuilder()
+                .setCustomId("redeem_modal")
+                .setTitle("🔑 Redeem Your Key")
+                .addComponents(
+                    new ActionRowBuilder().addComponents(
+                        new TextInputBuilder()
+                            .setCustomId("key_input")
+                            .setLabel("ใส่คีย์ของคุณที่นี่")
+                            .setPlaceholder("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
+                            .setStyle(TextInputStyle.Short)
+                            .setMinLength(32)
+                            .setMaxLength(32)
+                    )
+                );
+            return interaction.showModal(modal);
+        }
+
+        if (interaction.customId === "reset_hwid") {
+            if (hwidResetCooldownHours === null)
+                return interaction.reply({ content: "❌ แอดมินยังไม่ได้ตั้งเวลารีเซ็ต HWID กรุณาติดต่อแอดมิน", ephemeral: true });
+
+            const allKeys = await getDb() || {};
+            const keyId = Object.keys(allKeys).find(k => allKeys[k].usedBy === interaction.user.id);
+            if (!keyId)
+                return interaction.reply({ content: "❌ คุณยังไม่ได้ Redeem คีย์!", ephemeral: true });
+
+            const keyData = allKeys[keyId];
+            const nowSec = Math.floor(Date.now() / 1000);
+            const lastReset = keyData.lastHwidReset || 0;
+            const cooldownSec = hwidResetCooldownHours * 3600;
+            const elapsed = nowSec - lastReset;
+
+            if (lastReset > 0 && elapsed < cooldownSec) {
+                const remaining = cooldownSec - elapsed;
+                const h = Math.floor(remaining / 3600);
+                const m = Math.floor((remaining % 3600) / 60);
+                return interaction.reply({
+                    content: `⏳ คุณรีเซ็ต HWID ได้อีกครั้งใน **${h} ชั่วโมง ${m} นาที**`,
+                    ephemeral: true
+                });
+            }
+
+            await patchDb(`/${keyId}`, { hwid: "", lastHwidReset: nowSec });
+            return interaction.reply({ content: "✅ รีเซ็ต HWID สำเร็จ!", ephemeral: true });
+        }
+
+        if (interaction.customId === "key_state") {
+            const allKeys = await getDb() || {};
+            const keyId = Object.keys(allKeys).find(k => allKeys[k].usedBy === interaction.user.id);
+
+            if (!keyId)
+                return interaction.reply({ content: "❌ คุณยังไม่ได้ Redeem คีย์!", ephemeral: true });
+
+            const keyData = allKeys[keyId];
+
+            if (keyData.active && (!keyData.startTime || keyData.startTime === 0)) {
+                const nowSec = Math.floor(Date.now() / 1000);
+                await patchDb(`/${keyId}`, { startTime: nowSec });
+                keyData.startTime = nowSec;
+            }
+
+            const timeLeft = calcTimeLeft(keyData.startTime, keyData.duration);
+
+            let timeValue;
+            if (!timeLeft) {
+                timeValue = "❌ หมดอายุแล้ว";
+            } else if (timeLeft.permanent) {
+                timeValue = "♾️ ถาวร (ไม่หมดอายุ)";
+            } else {
+                timeValue = `**${timeLeft.days} วัน ${timeLeft.hours} ชั่วโมง ${timeLeft.minutes} นาที**`;
+            }
+
+            let hwidCooldownValue = "ไม่ได้ตั้งค่า";
+            if (hwidResetCooldownHours !== null && keyData.lastHwidReset > 0) {
+                const nowSec = Math.floor(Date.now() / 1000);
+                const elapsed = nowSec - keyData.lastHwidReset;
+                const cooldownSec = hwidResetCooldownHours * 3600;
+                const remaining = cooldownSec - elapsed;
+                if (remaining > 0) {
+                    const h = Math.floor(remaining / 3600);
+                    const m = Math.floor((remaining % 3600) / 60);
+                    hwidCooldownValue = `⏳ รีเซ็ตได้ใน ${h} ชม. ${m} นาที`;
+                } else {
+                    hwidCooldownValue = "✅ พร้อมรีเซ็ต";
+                }
+            } else if (hwidResetCooldownHours !== null) {
+                hwidCooldownValue = "✅ พร้อมรีเซ็ต";
+            }
+
+            const embed = new EmbedBuilder()
+                .setTitle("📊 Key State")
+                .setColor(timeLeft ? 0x2ecc71 : 0xe74c3c)
+                .addFields(
+                    { name: "🔑 Key", value: `\`${keyId}\``, inline: false },
+                    { name: "📌 Status", value: keyData.active ? "✅ Active" : "❌ Inactive", inline: true },
+                    { name: "▶️ Executions", value: String(keyData.executionCount || 0), inline: true },
+                    { name: "⏰ เวลาคงเหลือ", value: timeValue, inline: false },
+                    { name: "🔄 HWID Reset", value: hwidCooldownValue, inline: false }
+                )
+                .setFooter({ text: `User: ${interaction.user.tag}` })
+                .setTimestamp();
+
+            return interaction.reply({ embeds: [embed], ephemeral: true });
+        }
+    }
+
+    // ---------- SELECT MENU ----------
+    if (interaction.isStringSelectMenu() && interaction.customId === "script_select") {
+        const allKeys = await getDb() || {};
+        const userKey = Object.keys(allKeys).find(k => allKeys[k].usedBy === interaction.user.id);
+        const url = interaction.values[0];
+        const script = `getgenv().key = "${userKey}"\nloadstring(game:HttpGet('${url}'))()`;
+
+        return interaction.reply({
+            content: `**📋 สคริปต์ของคุณ:**\n\`\`\`lua\n${script}\n\`\`\``,
+            ephemeral: true
+        });
+    }
+
+    // ---------- MODAL ----------
+    if (interaction.isModalSubmit() && interaction.customId === "redeem_modal") {
+        const keyName = interaction.fields.getTextInputValue("key_input");
+        const data = await getDb(`/${keyName}`);
+
+        if (!data)
+            return interaction.reply({ content: "❌ คีย์ไม่ถูกต้อง!", ephemeral: true });
+        if (data.usedBy && data.usedBy !== interaction.user.id)
+            return interaction.reply({ content: "❌ คีย์นี้ถูกใช้งานไปแล้ว!", ephemeral: true });
+
+        const nowSec = Math.floor(Date.now() / 1000);
+        await patchDb(`/${keyName}`, {
+            usedBy: interaction.user.id,
+            active: true,
+            startTime: (data.startTime && data.startTime > 0) ? data.startTime : nowSec
+        });
+
+        const durationText = data.duration === -1 ? "♾️ ถาวร" : `${Math.floor(data.duration / 86400)} วัน`;
+
+        const embed = new EmbedBuilder()
+            .setTitle("✅ Redeem สำเร็จ!")
+            .setColor(0x2ecc71)
+            .addFields(
+                { name: "🔑 Key", value: `\`${keyName}\``, inline: false },
+                { name: "⏰ Duration", value: durationText, inline: true }
+            )
+            .setFooter({ text: `User: ${interaction.user.tag}` })
+            .setTimestamp();
+
+        return interaction.reply({ embeds: [embed], ephemeral: true });
+    }
+});
+
+client.login(TOKEN);
